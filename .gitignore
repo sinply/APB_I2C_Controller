@@ -1,0 +1,31 @@
+# SBT
+target/
+project/target/
+project/project/
+
+# IDE
+.idea/
+.bsp/
+.tools/
+.vscode/
+*.iml
+
+# Simulation
+simWorkspace/
+
+# SBT launcher (local)
+sbt-launch.jar
+
+# Generated RTL (optional - uncomment if you don't want to track)
+# rtl/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+*.tmp
+*.log
+*.bak
+*~
