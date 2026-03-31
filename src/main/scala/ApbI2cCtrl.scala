@@ -1,6 +1,7 @@
 package apb_i2c
 
 import spinal.core._
+import spinal.core.sim._
 import spinal.lib._
 import spinal.lib.bus.amba3.apb._
 import spinal.lib.io.TriState
@@ -89,7 +90,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
   }
 
   // State machine
-  val state = RegInit(I2cState.IDLE)
+  val state = RegInit(I2cState.IDLE).simPublic()  // simPublic for test access
 
   // Status registers
   val busy = RegInit(False)
@@ -104,21 +105,23 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
 
   // Prescaler for I2C timing
   val prescaleCnt = Reg(UInt(16 bits)) init(0)
-  val tick = prescaleCnt === 0
+  val tick = (prescaleCnt === 0).simPublic()  // simPublic for test access
   prescaleCnt := Mux(tick, io.prescale, prescaleCnt - 1)
 
   // SCL phase counter (counts prescaler ticks)
   val sclPhase = Reg(UInt(2 bits)) init(0)
 
   // I2C outputs (open-drain: write = 0 to drive low, writeEnable = 1 when driving)
-  val sclOut = RegInit(True)     // True = high-Z (released), False = drive low
-  val sclEnable = RegInit(False) // Enable output driver
-  val sdaOut = RegInit(True)
+  // IMPORTANT: In proper open-drain, write should ALWAYS be False.
+  // - To drive low: writeEnable=True, write=False
+  // - To release (high-Z): writeEnable=False (write value is ignored)
+  // Never set write=True when writeEnable=True (would actively drive high)
+  val sclEnable = RegInit(False) // Enable output driver (True = drive low)
   val sdaEnable = RegInit(False)
 
-  io.i2c.scl.write := sclOut
+  io.i2c.scl.write := False  // Always False for open-drain
   io.i2c.scl.writeEnable := sclEnable
-  io.i2c.sda.write := sdaOut
+  io.i2c.sda.write := False   // Always False for open-drain
   io.i2c.sda.writeEnable := sdaEnable
 
   // Sample inputs
@@ -176,9 +179,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
   when(tick) {
     switch(state) {
       is(I2cState.IDLE) {
-        sclOut := True
         sclEnable := False
-        sdaOut := True
         sdaEnable := False
         bitCnt := 0
         sclPhase := 0
@@ -186,15 +187,13 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         when(doStart) {
           // START condition: SDA falls while SCL high
           state := I2cState.START_1
-          sdaOut := False
-          sdaEnable := True
+          sdaEnable := True  // Drive SDA low
           busy := True
         }
       }
 
       is(I2cState.START_1) {
         // SDA already low, now pull SCL low
-        sclOut := False
         sclEnable := True
         state := I2cState.START_2
         // Load address for transmission
@@ -217,13 +216,12 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         switch(sclPhase) {
           is(0) {
             // SCL low - setup data
-            sdaOut := shiftReg(bitCnt.resized)
-            sdaEnable := True
+            // Bit=0: drive low, Bit=1: release (pull-up keeps high)
+            sdaEnable := !shiftReg(bitCnt.resized)
             sclPhase := 1
           }
           is(1) {
-            // SCL high - data valid
-            sclOut := True
+            // SCL high - data valid (release SCL)
             sclEnable := False
             sclPhase := 2
           }
@@ -233,14 +231,12 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           }
           is(3) {
             // SCL low - end of bit
-            sclOut := False
             sclEnable := True
             sclPhase := 0
 
             when(bitCnt === 0) {
               state := I2cState.ADDR_ACK
-              sdaOut := True  // Release for ACK
-              sdaEnable := False
+              sdaEnable := False  // Release SDA for ACK
             } otherwise {
               bitCnt := bitCnt - 1
             }
@@ -252,19 +248,22 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         // Sample ACK from slave
         switch(sclPhase) {
           is(0) {
-            // SCL high - sample
-            sclOut := True
-            sclEnable := False
+            // SCL low - release SDA for ACK sampling
+            sdaEnable := False
             sclPhase := 1
           }
           is(1) {
-            // Sample SDA
-            rxack := sdaIn  // 0 = ACK, 1 = NACK
+            // SCL high - sample (release SCL)
+            sclEnable := False
             sclPhase := 2
           }
           is(2) {
-            // SCL low
-            sclOut := False
+            // Sample SDA while SCL high
+            rxack := sdaIn  // 0 = ACK, 1 = NACK
+            sclPhase := 3
+          }
+          is(3) {
+            // SCL low - end of ACK phase
             sclEnable := True
             sclPhase := 0
 
@@ -283,7 +282,6 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
               when(doRead) {
                 state := I2cState.DATA_RX
                 bitCnt := 7
-                sdaOut := True
                 sdaEnable := False
               } elsewhen(doWrite) {
                 state := I2cState.DATA_TX
@@ -304,13 +302,12 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         switch(sclPhase) {
           is(0) {
             // SCL low - setup data
-            sdaOut := shiftReg(bitCnt.resized)
-            sdaEnable := True
+            // Bit=0: drive low, Bit=1: release (pull-up keeps high)
+            sdaEnable := !shiftReg(bitCnt.resized)
             sclPhase := 1
           }
           is(1) {
-            // SCL high
-            sclOut := True
+            // SCL high (release SCL)
             sclEnable := False
             sclPhase := 2
           }
@@ -320,14 +317,12 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           }
           is(3) {
             // SCL low
-            sclOut := False
             sclEnable := True
             sclPhase := 0
 
             when(bitCnt === 0) {
               state := I2cState.DATA_ACK
-              sdaOut := True  // Release for ACK
-              sdaEnable := False
+              sdaEnable := False  // Release SDA for ACK
             } otherwise {
               bitCnt := bitCnt - 1
             }
@@ -339,24 +334,27 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         // Receive 8 bits of data
         switch(sclPhase) {
           is(0) {
-            // SCL high
-            sclOut := True
-            sclEnable := False
+            // SCL low - setup for receiving
+            sclEnable := True
             sclPhase := 1
           }
           is(1) {
-            // Sample data on rising edge
+            // SCL high (release SCL) - sample data
+            sclEnable := False
             shiftReg := shiftReg(6 downto 0) ## sdaIn
             sclPhase := 2
           }
           is(2) {
-            // SCL low
-            sclOut := False
+            // Wait for SCL high period
+            sclPhase := 3
+          }
+          is(3) {
+            // SCL low - end of bit
             sclEnable := True
             sclPhase := 0
 
             when(bitCnt === 0) {
-              rxDataReg := shiftReg(6 downto 0) ## sdaIn
+              rxDataReg := shiftReg  // Store received data (already sampled in phase 1)
               state := I2cState.DATA_ACK
             } otherwise {
               bitCnt := bitCnt - 1
@@ -370,13 +368,13 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         switch(sclPhase) {
           is(0) {
             // SCL low - setup ACK/NACK
-            sdaOut := ackVal  // 0 = ACK, 1 = NACK
-            sdaEnable := True
+            // ACK (ackVal=0): drive SDA low
+            // NACK (ackVal=1): release SDA (pull-up keeps high)
+            sdaEnable := !ackVal
             sclPhase := 1
           }
           is(1) {
-            // SCL high
-            sclOut := True
+            // SCL high (release SCL)
             sclEnable := False
             sclPhase := 2
 
@@ -387,11 +385,9 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           }
           is(2) {
             // SCL low
-            sclOut := False
             sclEnable := True
             sclPhase := 0
-            sdaOut := True
-            sdaEnable := False
+            sdaEnable := False  // Release SDA
 
             when(doStop) {
               state := I2cState.STOP_1
@@ -412,19 +408,16 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         switch(sclPhase) {
           is(0) {
             // SCL low, SDA low
-            sdaOut := False
             sdaEnable := True
             sclPhase := 1
           }
           is(1) {
-            // SCL high
-            sclOut := True
+            // SCL high (release SCL)
             sclEnable := False
             sclPhase := 2
           }
           is(2) {
-            // SDA rises - STOP
-            sdaOut := True
+            // SDA rises - STOP (release SDA)
             sdaEnable := False
             state := I2cState.STOP_2
           }
@@ -448,9 +441,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
     state := I2cState.IDLE
     busy := False
     tip := False
-    sclOut := True
     sclEnable := False
-    sdaOut := True
     sdaEnable := False
     doStart := False
     doStop := False
@@ -486,7 +477,7 @@ case class ApbI2cCtrl(generics: ApbI2cCtrlGenerics) extends Component {
 
   // Control register with command auto-clear
   val ctrlReg = RegInit(CtrlReg().getZero)
-  val ctrlPulse = RegInit(CtrlReg().getZero)
+  val ctrlPulse = RegInit(CtrlReg().getZero).simPublic()  // simPublic for test access
 
   // Data registers
   val txDataReg = RegInit(B(0, generics.dataWidth bits))
