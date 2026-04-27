@@ -1,6 +1,6 @@
 // Generator : SpinalHDL v1.14.1    git head : e3230fe124f961bcb2b5fc35bcc23044a541c122
 // Component : ApbI2cCtrl
-// Git hash  : 9e3e1d4f773eab7e645dac0a4640cb5d019eed74
+// Git hash  : c4a9573091a7ff0e2902ea3a2353ef7b3181dc05
 
 `timescale 1ns/1ps
 
@@ -286,9 +286,9 @@ module I2cMasterCore (
   wire                when_ApbI2cCtrl_l165;
   wire       [7:0]    addrByte;
   wire                when_ApbI2cCtrl_l237;
-  wire                when_ApbI2cCtrl_l323;
-  wire                when_ApbI2cCtrl_l356;
-  wire                when_ApbI2cCtrl_l440;
+  wire                when_ApbI2cCtrl_l325;
+  wire                when_ApbI2cCtrl_l358;
+  wire                when_ApbI2cCtrl_l441;
   `ifndef SYNTHESIS
   reg [63:0] state_string;
   `endif
@@ -330,9 +330,9 @@ module I2cMasterCore (
   assign when_ApbI2cCtrl_l165 = ((state == I2cState_STOP_1) || (state == I2cState_STOP_2));
   assign addrByte = {io_slaveAddr[6 : 0],(doRead ? 1'b1 : 1'b0)};
   assign when_ApbI2cCtrl_l237 = (bitCnt == 4'b0000);
-  assign when_ApbI2cCtrl_l323 = (bitCnt == 4'b0000);
-  assign when_ApbI2cCtrl_l356 = (bitCnt == 4'b0000);
-  assign when_ApbI2cCtrl_l440 = (! io_ctrl_en);
+  assign when_ApbI2cCtrl_l325 = (bitCnt == 4'b0000);
+  assign when_ApbI2cCtrl_l358 = (bitCnt == 4'b0000);
+  assign when_ApbI2cCtrl_l441 = (! io_ctrl_en);
   assign io_status_rxack = rxack;
   assign io_status_busy = busy;
   assign io_status_tip = tip;
@@ -457,6 +457,8 @@ module I2cMasterCore (
                     busy <= 1'b0;
                     tip <= 1'b0;
                     ifl <= 1'b1;
+                    doWrite <= 1'b0;
+                    doRead <= 1'b0;
                   end
                 end else begin
                   if(doRead) begin
@@ -493,7 +495,7 @@ module I2cMasterCore (
               default : begin
                 sclEnable <= 1'b1;
                 sclPhase <= 2'b00;
-                if(when_ApbI2cCtrl_l323) begin
+                if(when_ApbI2cCtrl_l325) begin
                   state <= I2cState_DATA_ACK;
                   sdaEnable <= 1'b0;
                 end else begin
@@ -519,7 +521,7 @@ module I2cMasterCore (
               default : begin
                 sclEnable <= 1'b1;
                 sclPhase <= 2'b00;
-                if(when_ApbI2cCtrl_l356) begin
+                if(when_ApbI2cCtrl_l358) begin
                   rxDataReg <= shiftReg;
                   state <= I2cState_DATA_ACK;
                 end else begin
@@ -531,17 +533,17 @@ module I2cMasterCore (
           I2cState_DATA_ACK : begin
             case(sclPhase)
               2'b00 : begin
-                sdaEnable <= (! ackVal);
+                sdaEnable <= (doRead && (! ackVal));
                 sclPhase <= 2'b01;
               end
               2'b01 : begin
                 sclEnable <= 1'b0;
                 sclPhase <= 2'b10;
+              end
+              2'b10 : begin
                 if(doWrite) begin
                   rxack <= io_i2c_sda_read;
                 end
-              end
-              2'b10 : begin
                 sclEnable <= 1'b1;
                 sclPhase <= 2'b00;
                 sdaEnable <= 1'b0;
@@ -588,7 +590,7 @@ module I2cMasterCore (
           end
         endcase
       end
-      if(when_ApbI2cCtrl_l440) begin
+      if(when_ApbI2cCtrl_l441) begin
         state <= I2cState_IDLE;
         busy <= 1'b0;
         tip <= 1'b0;

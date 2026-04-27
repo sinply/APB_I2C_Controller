@@ -276,6 +276,8 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
                 busy := False
                 tip := False
                 ifl := True
+                doWrite := False
+                doRead := False
               }
             } otherwise {
               // ACK - proceed to data
@@ -368,22 +370,21 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         switch(sclPhase) {
           is(0) {
             // SCL low - setup ACK/NACK
-            // ACK (ackVal=0): drive SDA low
-            // NACK (ackVal=1): release SDA (pull-up keeps high)
-            sdaEnable := !ackVal
+            // For read: master drives ACK (ackVal=0) or NACK (ackVal=1)
+            // For write: master releases SDA so slave can respond
+            sdaEnable := doRead && !ackVal
             sclPhase := 1
           }
           is(1) {
             // SCL high (release SCL)
             sclEnable := False
             sclPhase := 2
-
-            // For TX, sample slave ACK
+          }
+          is(2) {
+            // For TX, sample slave ACK while SCL is stably high
             when(doWrite) {
               rxack := sdaIn
             }
-          }
-          is(2) {
             // SCL low
             sclEnable := True
             sclPhase := 0
