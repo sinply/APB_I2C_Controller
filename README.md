@@ -9,10 +9,12 @@ A fully-featured I2C master controller with APB3 slave interface, written in Spi
   - START/STOP condition generation
   - 7-bit and 10-bit slave addressing
   - Read/Write operations with ACK/NACK handling
+  - Clock stretching support (waits for SCL high after release)
   - Programmable clock prescaler
 - **Open-Drain Bus Interface**: Proper bidirectional TriState signals
+- **Input Synchronization**: Double-flop synchronizers for metastability protection on SCL/SDA inputs
 - **Interrupt Support**: Configurable IRQ output
-- **Comprehensive Test Suite**: 10 tests covering APB registers and I2C protocol
+- **Comprehensive Test Suite**: 14 tests covering APB registers, I2C protocol, and bug regression
 
 ## Architecture
 

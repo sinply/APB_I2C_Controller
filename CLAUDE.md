@@ -30,7 +30,7 @@ scripts/sbtw.sh list           # List available modules
 
 ## Architecture Overview
 
-**Current Status: Framework implementation.** The I2C state machine in `I2cMasterCore` is a skeleton that needs completion for full I2C protocol support.
+**Current Status: Full implementation.** The I2C state machine in `I2cMasterCore` supports complete I2C master protocol including clock stretching.
 
 ### Module Hierarchy
 - `ApbI2cCtrlGenerics`: Configuration parameters
@@ -66,13 +66,14 @@ scripts/sbtw.sh list           # List available modules
 
 ## Implementation Notes
 
-### TODO: I2C State Machine
-The `I2cMasterCore` needs a complete state machine for:
-- START condition generation
+### I2C State Machine
+The `I2cMasterCore` implements a complete state machine:
+- START/STOP condition generation
 - Address transmission (7/10-bit)
 - Data read/write with ACK/NACK
-- STOP condition generation
-- Clock stretching support
+- Clock stretching support (waits for SCL high after release)
+- Double-flop input synchronizers for metastability protection
+- 1-cycle command pulse generation from APB writes
 
 ### Design Patterns
 - **IMasterSlave trait:** `I2cBus` implements this for proper `master()` direction handling

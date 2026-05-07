@@ -124,14 +124,14 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
   io.i2c.sda.write := False   // Always False for open-drain
   io.i2c.sda.writeEnable := sdaEnable
 
-  // Sample inputs
-  val sclIn = io.i2c.scl.read
-  val sdaIn = io.i2c.sda.read
+  // Double-flop synchronizers for metastability protection
+  val sclSync = BufferCC(io.i2c.scl.read, True)
+  val sdaSync = BufferCC(io.i2c.sda.read, True)
 
-  // Previous SCL for edge detection
-  val sclPrev = RegNext(sclIn) init(True)
-  val sclRising = sclIn && !sclPrev
-  val sclFalling = !sclIn && sclPrev
+  // Clock stretching: wait for SCL to actually go high after release
+  // When master releases SCL (sclEnable=False), a slow slave may hold it low.
+  // sclSyncHigh is True only when SCL is genuinely high on the bus.
+  val sclSyncHigh = sclSync
 
   // Command register capture (one-shot)
   val doStart = RegInit(False)
@@ -164,15 +164,6 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
   }
   when(state === I2cState.STOP_1 || state === I2cState.STOP_2) {
     doStop := False
-  }
-
-  // Address formatting
-  val addrByte = Bits(8 bits)
-  if (generics.addrWidth == 7) {
-    addrByte := io.slaveAddr(6 downto 0) ## (doRead ? B"1" | B"0")
-  } else {
-    // 10-bit address: first byte is 11110XX + R/W, second byte is remaining 8 bits
-    addrByte := B"11110" ## io.slaveAddr(9 downto 8) ## (doRead ? B"1" | B"0")
   }
 
   // State machine
@@ -223,7 +214,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           is(1) {
             // SCL high - data valid (release SCL)
             sclEnable := False
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
             // Wait for SCL high period
@@ -255,11 +246,11 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           is(1) {
             // SCL high - sample (release SCL)
             sclEnable := False
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
             // Sample SDA while SCL high
-            rxack := sdaIn  // 0 = ACK, 1 = NACK
+            rxack := sdaSync  // 0 = ACK, 1 = NACK
             sclPhase := 3
           }
           is(3) {
@@ -311,7 +302,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           is(1) {
             // SCL high (release SCL)
             sclEnable := False
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
             // Wait
@@ -336,18 +327,18 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
         // Receive 8 bits of data
         switch(sclPhase) {
           is(0) {
-            // SCL low - setup for receiving
-            sclEnable := True
+            // SCL low - release SDA, prepare for slave to drive
+            sdaEnable := False
             sclPhase := 1
           }
           is(1) {
-            // SCL high (release SCL) - sample data
+            // SCL high (release SCL) - wait for SCL to actually go high
             sclEnable := False
-            shiftReg := shiftReg(6 downto 0) ## sdaIn
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
-            // Wait for SCL high period
+            // Sample SDA while SCL stably high
+            shiftReg := shiftReg(6 downto 0) ## sdaSync
             sclPhase := 3
           }
           is(3) {
@@ -356,7 +347,7 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
             sclPhase := 0
 
             when(bitCnt === 0) {
-              rxDataReg := shiftReg  // Store received data (already sampled in phase 1)
+              rxDataReg := shiftReg
               state := I2cState.DATA_ACK
             } otherwise {
               bitCnt := bitCnt - 1
@@ -378,14 +369,17 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           is(1) {
             // SCL high (release SCL)
             sclEnable := False
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
-            // For TX, sample slave ACK while SCL is stably high
+            // Sample ACK/NACK while SCL stably high
             when(doWrite) {
-              rxack := sdaIn
+              rxack := sdaSync
             }
-            // SCL low
+            sclPhase := 3
+          }
+          is(3) {
+            // SCL low - end of ACK phase
             sclEnable := True
             sclPhase := 0
             sdaEnable := False  // Release SDA
@@ -410,14 +404,19 @@ case class I2cMasterCore(generics: ApbI2cCtrlGenerics) extends Component {
           is(0) {
             // SCL low, SDA low
             sdaEnable := True
+            sclEnable := True
             sclPhase := 1
           }
           is(1) {
-            // SCL high (release SCL)
+            // SCL high (release SCL) - SDA still low
             sclEnable := False
-            sclPhase := 2
+            when(sclSyncHigh) { sclPhase := 2 }  // Wait for SCL high (clock stretching)
           }
           is(2) {
+            // Wait for SCL to be stably high
+            sclPhase := 3
+          }
+          is(3) {
             // SDA rises - STOP (release SDA)
             sdaEnable := False
             state := I2cState.STOP_2
@@ -478,7 +477,8 @@ case class ApbI2cCtrl(generics: ApbI2cCtrlGenerics) extends Component {
 
   // Control register with command auto-clear
   val ctrlReg = RegInit(CtrlReg().getZero)
-  val ctrlPulse = RegInit(CtrlReg().getZero).simPublic()  // simPublic for test access
+  val ctrlWriteData = Reg(CtrlReg())
+  val ctrlWritePulse = RegInit(False).simPublic()
 
   // Data registers
   val txDataReg = RegInit(B(0, generics.dataWidth bits))
@@ -486,20 +486,38 @@ case class ApbI2cCtrl(generics: ApbI2cCtrlGenerics) extends Component {
   val addrReg = RegInit(B(0, generics.addrWidth bits))
   val prescaleReg = RegInit(U(0, 16 bits))
 
-  // Command auto-clear logic
-  // Command bits (sta/sto/rd/wr/ack) are cleared after one cycle
-  val cmdClear = RegInit(False)
-  when(cmdClear) {
+  // Command auto-clear logic: command bits cleared 1 cycle after CTRL write
+  when(ctrlWritePulse) {
     ctrlReg.sta := False
     ctrlReg.sto := False
     ctrlReg.rd := False
     ctrlReg.wr := False
     ctrlReg.ack := False
-    cmdClear := False
+    ctrlWritePulse := False
   }
 
-  // Capture command pulses
-  ctrlPulse := ctrlReg
+  // Generate 1-cycle pulse from APB write to CTRL
+  val apbAddr = io.apb.PADDR(4 downto 2)
+  val apbWrite = io.apb.PSEL(0) && io.apb.PENABLE && io.apb.PWRITE
+  val apbRead = io.apb.PSEL(0) && io.apb.PENABLE && !io.apb.PWRITE
+  val ctrlWrite = apbWrite && apbAddr === ApbI2cCtrlRegs.CTRL / 4
+
+  // On APB write to CTRL: capture written data and generate a 1-cycle pulse
+  when(ctrlWrite) {
+    ctrlWriteData := io.apb.PWDATA.as(CtrlReg())
+    ctrlWritePulse := True
+  }
+
+  // Command pulse: only the exact bits that were written, active for 1 cycle
+  val ctrlPulse = CtrlReg()
+  ctrlPulse.en := False
+  ctrlPulse.ien := False
+  ctrlPulse.sta := ctrlWritePulse && ctrlWriteData.sta
+  ctrlPulse.sto := ctrlWritePulse && ctrlWriteData.sto
+  ctrlPulse.rd := ctrlWritePulse && ctrlWriteData.rd
+  ctrlPulse.wr := ctrlWritePulse && ctrlWriteData.wr
+  ctrlPulse.ack := ctrlWritePulse && ctrlWriteData.ack
+  ctrlPulse.reserved := 0
 
   // I2C Core
   val i2cCore = I2cMasterCore(generics)
@@ -517,17 +535,13 @@ case class ApbI2cCtrl(generics: ApbI2cCtrlGenerics) extends Component {
   // IRQ
   io.irq := i2cCore.io.status.ifl && ctrlReg.ien
 
-  // APB register access
-  val apbAddr = io.apb.PADDR(4 downto 2)
-  val apbWrite = io.apb.PSEL(0) && io.apb.PENABLE && io.apb.PWRITE
-  val apbRead = io.apb.PSEL(0) && io.apb.PENABLE && !io.apb.PWRITE
+  // APB register access (apbAddr, apbWrite, apbRead defined above with ctrlPulse logic)
 
   // APB write logic
   when(apbWrite) {
     switch(apbAddr) {
       is(ApbI2cCtrlRegs.CTRL / 4) {
         ctrlReg := io.apb.PWDATA.as(CtrlReg())
-        cmdClear := True
       }
       is(ApbI2cCtrlRegs.DATA / 4) {
         txDataReg := io.apb.PWDATA(7 downto 0)

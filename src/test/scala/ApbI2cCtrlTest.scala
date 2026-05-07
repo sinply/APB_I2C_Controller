@@ -451,17 +451,17 @@ class ApbI2cCtrlTest extends FunSuite {
   }
 
   /**
-   * Bug 1.3: ctrlPulse command bits persist for 2 cycles after CTRL write.
+   * Bug 1.3: ctrlWritePulse should only last one cycle after CTRL write.
    * Validates: Requirements 2.3
    *
-   * Expected behavior: After writing to CTRL register, command bits in
-   * ctrlPulse should only be active for exactly 1 clock cycle.
+   * Expected behavior: After writing to CTRL register, ctrlWritePulse should
+   * only be active for exactly 1 clock cycle.
    *
-   * Current bug: ctrlPulse is a register that copies ctrlReg. Since cmdClear
-   * takes effect one cycle after the write, ctrlPulse carries command bits
-   * for 2 cycles.
+   * Previous bug: ctrlPulse was a register that copied ctrlReg, causing
+   * command bits to persist for 2 cycles. Fixed by generating pulse from
+   * the APB write event directly.
    */
-  test("BUG-1.3: ctrlPulse command bits should only last one cycle") {
+  test("BUG-1.3: ctrlWritePulse should only last one cycle") {
     SimConfig.withWave.compile(ApbI2cCtrl(generics)).doSim { dut =>
       initDut(dut)
 
@@ -474,26 +474,24 @@ class ApbI2cCtrlTest extends FunSuite {
       // Write CTRL with sta=1 (bit 2): en=1, sta=1 => 0x05
       apbWrite(dut, ApbI2cCtrlRegs.CTRL, 0x05)
 
-      // Now monitor ctrlPulse.sta for the next several cycles
+      // Now monitor ctrlWritePulse for the next several cycles
       // It should be True for exactly 1 cycle, then False
-      var cyclesWithStaActive = 0
-      var monitoringStarted = false
+      var cyclesWithPulseActive = 0
 
       for (cycle <- 0 until 20) {
         dut.clockDomain.waitSampling()
 
-        // Access internal ctrlPulse signal
-        val staPulse = dut.ctrlPulse.sta.toBoolean
+        val pulseActive = dut.ctrlWritePulse.toBoolean
 
-        if (staPulse) {
-          cyclesWithStaActive += 1
+        if (pulseActive) {
+          cyclesWithPulseActive += 1
         }
       }
 
-      if (cyclesWithStaActive > 1) {
-        fail(s"ctrlPulse.sta was active for $cyclesWithStaActive cycles, expected exactly 1 cycle")
-      } else if (cyclesWithStaActive == 0) {
-        fail("ctrlPulse.sta was never active - command pulse not generated")
+      if (cyclesWithPulseActive > 1) {
+        fail(s"ctrlWritePulse was active for $cyclesWithPulseActive cycles, expected exactly 1 cycle")
+      } else if (cyclesWithPulseActive == 0) {
+        fail("ctrlWritePulse was never active - command pulse not generated")
       }
     }
   }
